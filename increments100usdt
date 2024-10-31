@@ -1,0 +1,169 @@
+const {
+    getContextFromWsKey,
+    isWsPartialBookDepthEventFormatted,
+    MainClient,
+    WebsocketClient,
+} = require('binance');
+const { OrderBookLevel, OrderBooksStore } = require('orderbooks');
+
+const binanceWs = new WebsocketClient({
+    beautify: true,
+});
+const binanceRest = new MainClient();
+
+
+// This function filters and logs asks in $100 intervals starting from the current price
+function handleAsks(symbol, asks, currentPrice) {
+    let groupedAsks = {};
+    let intervalStart = Math.ceil(currentPrice / 100) * 100; 
+    let nextIntervalStart = intervalStart + 100; 
+
+    asks.forEach(([price, amount]) => {
+        price = parseFloat(price);
+        amount = parseFloat(amount);
+
+        if (price < currentPrice) return;
+
+        while (price >= nextIntervalStart) {
+            intervalStart = nextIntervalStart;
+            nextIntervalStart += 100;
+        }
+
+        const intervalKey = `$${intervalStart.toFixed(2)} - $${nextIntervalStart.toFixed(2)}`;
+
+        if (!groupedAsks[intervalKey]) {
+            groupedAsks[intervalKey] = { totalAmount: 0, orderCount: 0 };
+        }
+
+        groupedAsks[intervalKey].totalAmount += amount;
+        groupedAsks[intervalKey].orderCount += 1;
+    });
+
+    console.log(`Asks for ${symbol}:`);
+    Object.entries(groupedAsks).forEach(([interval, { totalAmount, orderCount }]) => {
+        console.log(`${interval}: Total amount: ${totalAmount.toFixed(6)}, Orders: ${orderCount}`);
+    });
+}
+
+// This function filters and logs bids in $100 intervals starting from the current price
+function handleBids(symbol, bids, currentPrice) {
+    let groupedBids = {};
+    let intervalStart = Math.floor(currentPrice / 100) * 100; 
+    let nextIntervalStart = intervalStart - 100; 
+
+    bids.forEach(([price, amount]) => {
+        price = parseFloat(price);
+        amount = parseFloat(amount);
+
+        if (price > currentPrice) return;
+
+        while (price <= nextIntervalStart) {
+            intervalStart = nextIntervalStart;
+            nextIntervalStart -= 100;
+        }
+
+        const intervalKey = `$${intervalStart.toFixed(2)} - $${nextIntervalStart.toFixed(2)}`;
+
+        if (!groupedBids[intervalKey]) {
+            groupedBids[intervalKey] = { totalAmount: 0, orderCount: 0 };
+        }
+
+        groupedBids[intervalKey].totalAmount += amount;
+        groupedBids[intervalKey].orderCount += 1;
+    });
+
+    console.log(`Bids for ${symbol}:`);
+    Object.entries(groupedBids).forEach(([interval, { totalAmount, orderCount }]) => {
+        console.log(`${interval}: Total amount: ${totalAmount.toFixed(6)}, Orders: ${orderCount}`);
+    });
+}
+
+// This function handles the orderbook snapshot
+function handleOrderbookSnapshot(symbol, snapshot) {
+    const { asks, bids } = snapshot;
+
+    // Calculate the current price as the midpoint of the highest bid and lowest ask
+    const currentPrice = parseFloat(snapshot.bids[0][0]);
+
+    handleAsks(symbol, asks, currentPrice);
+    handleBids(symbol, bids, currentPrice);
+}
+
+// Connect to a websocket and relay orderbook events to handlers
+const symbol = 'BTCUSDT';
+
+binanceWs.on('error', (msg) => {
+    console.error(new Date(), 'Binance WS Error', msg);
+});
+
+binanceWs.on('open', (data) => {
+    console.log(
+        new Date(),
+        'Binance WS connection opened:',
+        data.wsKey,
+        data.ws.target.url,
+    );
+});
+
+binanceWs.on('reply', (data) => {
+    console.log(
+        new Date(),
+        'Binance WS log reply: ',
+        JSON.stringify(data, null, 2),
+    );
+});
+
+binanceWs.on('reconnecting', (data) => {
+    console.log(
+        new Date(),
+        'Binance WS automatically reconnecting.... ',
+        data?.wsKey,
+    );
+});
+
+binanceWs.on('reconnected', (data) => {
+    console.log(new Date(), 'Binance WS has reconnected ', data?.wsKey);
+});
+
+binanceWs.on('formattedMessage', (data) => {
+    if (isWsPartialBookDepthEventFormatted(data)) {
+        const context = getContextFromWsKey(data.wsKey);
+
+        if (!context?.symbol) {
+            throw new Error('Failed to extract context from event');
+        }
+
+        console.clear();
+        handleOrderbookSnapshot(context.symbol.toUpperCase(), data);
+        return;
+    }
+});
+
+// Function to log order book updates every second
+async function logOrderbookUpdates() {
+    try {
+        const snapshot = await binanceRest.getOrderBook({
+            symbol,
+            limit: 5000,  // Increase the limit to get as many levels as possible
+        });
+
+        // Log the current price once before processing order books
+        const currentPrice = parseFloat(snapshot.bids[0][0]);
+        console.log(`Current price for ${symbol}: $${currentPrice.toFixed(2)}`);
+
+        handleOrderbookSnapshot(symbol.toUpperCase(), snapshot);
+    } catch (e) {
+        console.error('Failed to fetch orderbook snapshot via REST API', e);
+    }
+}
+
+// Start monitoring orderbook
+async function startOrderbookMonitoring() {
+    await logOrderbookUpdates(); // Initial call
+    binanceWs.subscribePartialBookDepths(symbol, 21, 100, 'spot');
+
+    // Set an interval to log updates every second
+    setInterval(logOrderbookUpdates, 10000);
+}
+
+startOrderbookMonitoring();
