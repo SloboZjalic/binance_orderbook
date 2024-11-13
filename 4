@@ -1,0 +1,47 @@
+const WebSocket = require('ws');
+const axios = require('axios');
+
+// Binance WebSocket URL for Futures order book
+const binanceFuturesUrl = 'wss://fstream.binance.com/ws/btcusdt@depth';
+
+// Function to handle order book updates
+function handleOrderBookUpdate(data) {
+    const book = data;
+    console.log(`Book received for ${book.s} with ${book.a.length + book.b.length} entries.`);
+    console.log(`Max/min asks: ${Math.max(...book.a.map(entry => entry[0]))}/${Math.min(...book.a.map(entry => entry[0]))}`);
+    console.log(`Max/min bids: ${Math.max(...book.b.map(entry => entry[0]))}/${Math.min(...book.b.map(entry => entry[0]))}`);
+
+    if (book.E) {
+        console.log(`Delta contains ${book.a.length + book.b.length} entries.`);
+    }
+}
+
+// Initialize WebSocket connection to Binance Futures
+const ws = new WebSocket(binanceFuturesUrl);
+
+// Listen for updates from Binance Futures WebSocket
+ws.on('open', () => {
+    console.log("Connected to Binance Futures order book.");
+});
+
+// Handle incoming messages
+ws.on('message', (data) => {
+    const parsedData = JSON.parse(data);
+    handleOrderBookUpdate(parsedData);
+});
+
+// Handle WebSocket errors
+ws.on('error', (error) => {
+    console.error('WebSocket error:', error);
+});
+
+// Handle WebSocket closure
+ws.on('close', () => {
+    console.log('Disconnected from Binance Futures WebSocket.');
+});
+
+// Graceful shutdown (Ctrl+C to stop)
+process.on('SIGINT', () => {
+    console.log("Stopping the feed...");
+    ws.close();
+});
