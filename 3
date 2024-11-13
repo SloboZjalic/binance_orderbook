@@ -1,0 +1,28 @@
+import time
+from cryptofeed import FeedHandler
+from cryptofeed.exchanges import BinanceFutures
+from cryptofeed.defines import L2_BOOK, BID, ASK
+
+
+# Define the callback function to handle order book updates
+async def order_book_update(book, receipt_timestamp):
+    print(f'Book received at {receipt_timestamp} for {book.exchange} - {book.symbol}, with {len(book.book)} entries.\n'
+          f'Max/min asks: ${max(book.book.asks)}/${min(book.book.asks)}\n'
+          f'Max/min bids: ${max(book.book.bids)}/${min(book.book.bids)}')
+    if book.delta:
+        print(f"Delta from last book contains {len(book.delta[BID]) + len(book.delta[ASK])} entries.")
+    if book.sequence_number:
+        assert isinstance(book.sequence_number, int)
+
+# Initialize the FeedHandler to manage data streams
+f = FeedHandler()
+
+# Add Binance order book feed to the handler
+f.add_feed(BinanceFutures(symbols=['BTC-USDT-PERP'], channels=[L2_BOOK], callbacks={L2_BOOK: order_book_update}))
+
+# Run the feed handler to continuously listen for updates
+try:
+    print("Starting to listen to Binance order book...")
+    f.run()  # This will continuously fetch order book data
+except KeyboardInterrupt:
+    print("Stopping the feed...")
