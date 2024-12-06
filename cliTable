@@ -1,0 +1,124 @@
+const WebSocket = require('ws');
+const axios = require('axios');
+const Table = require('cli-table3');
+
+// Store order book data
+let orderBookData = {
+  bids: new Map(),
+  asks: new Map(),
+  lastUpdateId: 0,
+};
+
+// Function to process the order book snapshot from the REST API
+async function fetchOrderBookSnapshot(symbol) {
+  try {
+    const snapshot = await axios.get(`https://api.binance.com/api/v3/depth?symbol=BTCUSDT&limit=5000`);
+    snapshot.data.bids.forEach(([price, amount]) => {
+      addOrder(orderBookData.bids, price, amount, 'bid');
+    });
+    snapshot.data.asks.forEach(([price, amount]) => {
+      addOrder(orderBookData.asks, price, amount, 'ask');
+    });
+    orderBookData.lastUpdateId = snapshot.data.lastUpdateId;
+    console.log('Initial snapshot loaded.');
+    displayOrderBook(symbol); // Display the order book after loading the snapshot
+  } catch (error) {
+    console.error('Error fetching order book snapshot:', error);
+  }
+}
+
+// Function to handle WebSocket events and update the order book
+function handleWebSocketEvent(event) {
+  const { u, U, b, a } = event;
+
+  // Ignore out-of-order or duplicate events
+  if (u <= orderBookData.lastUpdateId) return;
+
+  // Update order book with new bids and asks
+  b.forEach(([price, amount]) => {
+    addOrder(orderBookData.bids, price, amount, 'bid');
+  });
+  a.forEach(([price, amount]) => {
+    addOrder(orderBookData.asks, price, amount, 'ask');
+  });
+
+  // Update the last processed update ID
+  orderBookData.lastUpdateId = u;
+
+  // Display the updated order book
+  displayOrderBook('BTCUSDT');
+}
+
+// Helper function to add orders to the map with $100 grouping
+function addOrder(orderMap, price, amount, type) {
+  const roundedPrice = type === 'bid'
+    ? Math.floor(price / 100) * 100  // Round bid prices down to the nearest hundred
+    : Math.ceil(price / 100) * 100;  // Round ask prices up to the nearest hundred
+
+  const currentAmount = orderMap.get(roundedPrice) || 0;
+  if (amount === 0) {
+    orderMap.delete(roundedPrice); // Remove price level if amount is 0
+  } else {
+    orderMap.set(roundedPrice, currentAmount + amount);
+  }
+}
+
+// Function to display the order book as a table
+function displayOrderBook(symbol) {
+  console.clear();
+  console.log(`Order Book for ${symbol} (Real-Time, Grouped by $100):`);
+
+  const table = new Table({
+    head: ['Bid Price', 'Bid Amount', 'Ask Price', 'Ask Amount'],
+    colWidths: [15, 15, 15, 15],
+  });
+
+  const topBids = Array.from(orderBookData.bids.entries()).sort((a, b) => b[0] - a[0]).slice(0, 10);
+  const topAsks = Array.from(orderBookData.asks.entries()).sort((a, b) => a[0] - b[0]).slice(0, 10);
+
+  const maxLength = Math.max(topBids.length, topAsks.length);
+  for (let i = 0; i < maxLength; i++) {
+    const bid = topBids[i] || ['-', '-'];
+    const ask = topAsks[i] || ['-', '-'];
+    table.push([bid[0], bid[1], ask[0], ask[1]]);
+  }
+
+  console.log(table.toString());
+}
+
+// Initialize WebSocket connection to Binance
+function initializeWebSocket(symbol) {
+  const socketUrl = `wss://stream.binance.com:9443/ws/${symbol.toLowerCase()}@depth@100ms`;
+  const socket = new WebSocket(socketUrl);
+
+  socket.on('open', () => {
+    console.log('Connected to Binance WebSocket');
+  });
+
+  socket.on('message', (data) => {
+    const parsedData = JSON.parse(data);
+    handleWebSocketEvent(parsedData);
+  });
+
+  socket.on('error', (error) => {
+    console.error('WebSocket Error:', error);
+  });
+
+  socket.on('close', () => {
+    console.log('WebSocket connection closed. Reconnecting...');
+    setTimeout(() => initializeWebSocket(symbol), 1000); // Reconnect after 1 second
+  });
+}
+
+// Start monitoring the order book
+async function startOrderBookMonitoring() {
+  const symbol = 'BTCUSDT';
+
+  // Fetch initial snapshot
+  await fetchOrderBookSnapshot(symbol);
+
+  // Start WebSocket updates after snapshot
+  initializeWebSocket(symbol);
+}
+
+startOrderBookMonitoring();
